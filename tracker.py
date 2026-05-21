@@ -349,10 +349,14 @@ class MoonrakerClient:
             return None
 
     async def _send_json(self, data: Dict):
+        if self.ws is None:
+            return
         await self.ws.send(json.dumps(data))
 
-    def stop(self):
+    async def stop(self):
         self._running = False
+        if self.ws:
+            await self.ws.close()
 
 
 # ─── HTTP Server ────────────────────────────────────────────────────────────
@@ -413,7 +417,7 @@ async def main():
     loop = asyncio.get_running_loop()
 
     async def stop_all():
-        client.stop()
+        await client.stop()
         await httpd.stop()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
