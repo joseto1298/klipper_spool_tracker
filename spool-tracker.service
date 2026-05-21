@@ -1,0 +1,15 @@
+[Unit]
+Description=Klipper Spool Tracker for Moonraker/Klipper
+After=network-online.target moonraker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/klipper_spool_tracker
+ExecStart=/home/pi/klipper_spool_tracker/.venv/bin/python tracker.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
