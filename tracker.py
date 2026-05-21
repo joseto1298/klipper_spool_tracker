@@ -6,6 +6,7 @@ via WebSocket de Moonraker, independiente de Odoo.
 import asyncio
 import json
 import logging
+import logging.handlers
 import os
 import sqlite3
 import signal
@@ -16,11 +17,18 @@ import aiohttp
 from aiohttp import web
 import websockets
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+_LOG_FILE = "/var/log/spool-tracker.log"
+_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
 logger = logging.getLogger("spool_tracker")
+
+try:
+    _fh = logging.handlers.WatchedFileHandler(_LOG_FILE)
+    _fh.setFormatter(logging.Formatter(_LOG_FORMAT))
+    logger.addHandler(_fh)
+except OSError:
+    pass  # log file no disponible (entorno Windows, etc.)
 
 
 # ─── Config ────────────────────────────────────────────────────────────────

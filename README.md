@@ -24,13 +24,28 @@ python query.py --tracker                      # query tracker HTTP instead of l
 
 ## Deployment (Raspberry Pi / Linux)
 
-Clone to `/home/pi/klipper_spool_tracker` and install the systemd service:
+Clone to `/home/pi/klipper_spool_tracker`:
 
 ```bash
+cd /home/pi
+git clone <repo-url> klipper_spool_tracker
+cd klipper_spool_tracker
+```
+
+Option A — automatic (recommended):
+
+```bash
+chmod +x install.sh && ./install.sh
+```
+
+Option B — manual:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 sudo cp spool-tracker.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable spool-tracker
-sudo systemctl start spool-tracker
 ```
 
 Edit `config.json` to point to your Moonraker WebSocket before starting. See `config.example.json` for the default structure.
@@ -45,8 +60,10 @@ Edit `config.json` (or copy `config.example.json`):
 |------------------|------------------------------|
 | `MOONRAKER_URL`  | WebSocket URL (default `ws://localhost:7125/websocket`) |
 | `DB_PATH`        | SQLite database path         |
+| `HTTP_HOST`      | HTTP server bind address     |
+| `HTTP_PORT`      | HTTP server port             |
 
-The DB auto-prunes to the last 100 distinct jobs to keep the file small.
+The DB auto-prunes to the last 100 distinct jobs to keep the file small. Logs go to `/var/log/spool-tracker.log` (rotated daily via `spool-tracker.logrotate`).
 
 ## HTTP Endpoints
 
