@@ -55,12 +55,12 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
 # 3. Systemd service — instala, habilita para boot y arranca
-sudo cp spool-tracker.service /etc/systemd/system/
+sudo cp klipper_spool_tracker.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now spool-tracker.service
+sudo systemctl enable --now klipper_spool_tracker.service
 
 # 4. Logrotate
-sudo cp spool-tracker.logrotate /etc/logrotate.d/spool-tracker
+sudo cp klipper_spool_tracker.logrotate /etc/logrotate.d/klipper_spool_tracker
 
 # 5. Moonraker — copia el snippet a tu moonraker.conf
 cat moonraker-example.cfg >> ~/printer_data/config/moonraker.conf
@@ -73,8 +73,8 @@ cat moonraker-example.cfg >> ~/printer_data/config/moonraker.conf
 2. **Edita `moonraker.conf`** — revisa la URL `origin` del repo.
 3. **Si cambiaste config, reinicia:**
    ```bash
-   sudo systemctl restart spool-tracker
-   sudo journalctl -u spool-tracker -f
+   sudo systemctl restart klipper_spool_tracker
+   sudo journalctl -u klipper_spool_tracker -f
    ```
 
 ## Config

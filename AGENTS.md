@@ -30,7 +30,7 @@ python query.py --tracker --job 0004E2
 
 ## Service
 
-- `spool-tracker.service` — systemd unit; uses `%h` specifier (expands to home of `User=`), all paths relative to `%h/klipper_spool_tracker`
+- `klipper_spool_tracker.service` — systemd unit; uses `%h` specifier (expands to home of `User=`), all paths relative to `%h/klipper_spool_tracker`
 - `install.sh` — 7-step auto-installer: config → venv → pip → systemd → moonraker snippet → logrotate → done
 - `moonraker-example.cfg` — snippet for `moonraker.conf` with `install_script: install.sh`; auto-installed by `install.sh`
 

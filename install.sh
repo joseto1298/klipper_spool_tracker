@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-SERVICE_NAME="spool-tracker"
+SERVICE_NAME="klipper_spool_tracker"
 SERVICE_FILE="$REPO_DIR/$SERVICE_NAME.service"
 
 echo "==> Klipper Spool Tracker — Instalacion"
