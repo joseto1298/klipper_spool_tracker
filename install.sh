@@ -54,8 +54,8 @@ with open(conf_path) as f:
 with open(snippet_path) as f:
     snippet = f.read()
 pat = r'\[update_manager klipper_spool_tracker\].*?(?=\n\[|\Z)'
-if re.search(pat, content, re.DOTALL):
-    content = re.sub(pat, snippet.strip(), content, re.DOTALL)
+if re.search(pat, content, flags=re.DOTALL):
+    content = re.sub(pat, snippet.strip(), content, flags=re.DOTALL)
     print("  [update_manager] actualizado")
 else:
     content += "\n\n# Klipper Spool Tracker — anadido por install.sh\n" + snippet
