@@ -29,7 +29,7 @@ echo "[3/7] Instalando dependencias..."
 echo "[4/7] Instalando systemd service..."
 sudo cp "$SERVICE_FILE" "/etc/systemd/system/$SERVICE_NAME.service"
 sudo systemctl daemon-reload
-sudo systemctl enable --now "$SERVICE_NAME"
+sudo systemctl enable --now "$SERVICE_NAME.service"
 
 # 4. Moonraker config snippet
 ORIGINAL_USER="${SUDO_USER:-$USER}"
