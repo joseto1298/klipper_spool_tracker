@@ -3,7 +3,7 @@
 Tracks real filament consumption per spool by connecting to a Moonraker (Klipper) WebSocket.
 Serves data via HTTP GET on port 8200 for Odoo to consume (pull model).
 
-## Setup
+## Setup (desarrollo)
 
 ```bash
 python -m venv .venv
@@ -15,63 +15,96 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python tracker.py                              # start daemon
-python query.py spool_usage.db                 # query all usage
-python query.py spool_usage.db --job 0004E2    # filter by job
-python query.py spool_usage.db --spool 1       # filter by spool
-python query.py --tracker                      # query tracker HTTP instead of local DB
+python tracker.py                              # inicia daemon (HTTP en :8200)
+python query.py spool_usage.db                 # consulta toda la DB local
+python query.py spool_usage.db --job 0004E2    # filtrar por trabajo
+python query.py spool_usage.db --spool 1       # filtrar por bobina
+python query.py --tracker                      # consultar via HTTP API del daemon
 ```
 
 ## Deployment (Raspberry Pi / Linux)
 
-Clone to `/home/pi/klipper_spool_tracker`:
-
 ```bash
-cd /home/pi
+cd ~
 git clone <repo-url> klipper_spool_tracker
 cd klipper_spool_tracker
 ```
 
-Option A — automatic (recommended):
+### Opcion A — automatica (recomendada)
 
 ```bash
 chmod +x install.sh && ./install.sh
 ```
 
-Option B — manual:
+Esto hace todo automaticamente:
+1. Crea `config.json` desde `config.example.json` (si no existe)
+2. Crea `.venv` e instala dependencias
+3. Instala y habilita el systemd service (`spool-tracker`)
+4. Agrega el snippet de Moonraker a `moonraker.conf` (lo detecta en `printer_data/config/` o `klipper_config/`)
+5. Instala logrotate para `/var/log/spool-tracker.log`
+
+### Opcion B — manual
 
 ```bash
+# 1. Config
+cp config.example.json config.json
+
+# 2. Entorno virtual
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+
+# 3. Systemd service
 sudo cp spool-tracker.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable spool-tracker
+
+# 4. Logrotate
+sudo cp spool-tracker.logrotate /etc/logrotate.d/spool-tracker
+
+# 5. Moonraker — copia el snippet a tu moonraker.conf
+cat moonraker-example.cfg >> ~/printer_data/config/moonraker.conf
 ```
 
-Edit `config.json` to point to your Moonraker WebSocket before starting. See `config.example.json` for the default structure.
+### Post-instalacion
 
-Add `moonraker-example.cfg` to your `moonraker.conf` to enable Spoolman integration and automatic updates.
+1. **Edita `config.json`** — pon la IP real de tu Moonraker (`moonraker_url`) y Spoolman si aplica.  
+   `config.json` esta en `.gitignore` asi que `git pull` nunca lo sobrescribe.
+2. **Edita `moonraker.conf`** — revisa la URL `origin` del repo.
+3. **Inicia el servicio:**
+   ```bash
+   sudo systemctl start spool-tracker
+   sudo journalctl -u spool-tracker -f
+   ```
 
 ## Config
 
-Edit `config.json` (or copy `config.example.json`):
+Edita `config.json` (se crea desde `config.example.json` si no existe):
 
-| Variable         | Description                  |
-|------------------|------------------------------|
-| `MOONRAKER_URL`  | WebSocket URL (default `ws://localhost:7125/websocket`) |
-| `DB_PATH`        | SQLite database path         |
-| `HTTP_HOST`      | HTTP server bind address     |
-| `HTTP_PORT`      | HTTP server port             |
+| Variable         | Descripcion                     | Default                        |
+|------------------|---------------------------------|--------------------------------|
+| `MOONRAKER_URL`  | WebSocket de Moonraker          | `ws://localhost:7125/websocket`|
+| `DB_PATH`        | Ruta a la DB SQLite             | `spool_usage.db`               |
+| `HTTP_HOST`      | Bind address del servidor HTTP  | `0.0.0.0`                      |
+| `HTTP_PORT`      | Puerto del servidor HTTP        | `8200`                         |
 
-The DB auto-prunes to the last 100 distinct jobs to keep the file small. Logs go to `/var/log/spool-tracker.log` (rotated daily via `spool-tracker.logrotate`).
+Las variables de entorno tienen prioridad sobre `config.json`.
+
+La DB se poda automaticamente a los ultimos 100 jobs distintos.  
+Los logs van a `/var/log/spool-tracker.log` (rotacion diaria via `spool-tracker.logrotate`) y a journald (stderr).
 
 ## HTTP Endpoints
 
-- `GET /spool_usage` — returns JSON array of spool usage records
-- `GET /spool_usage?job_id=0004E2` — filter by job
-- `GET /spool_usage?spool_id=1` — filter by spool
-- `GET /health` — health check
+- `GET /health` — health check (`{"status": "ok"}`)
+- `GET /spool_usage` — todos los registros
+- `GET /spool_usage?job_id=0004E2` — filtrar por job
+- `GET /spool_usage?spool_id=1` — filtrar por bobina
 
 ## Database
 
-SQLite with WAL mode. Single table `spool_usage` (`job_id` TEXT, `spool_id` INT, `filament_mm` REAL). Schema auto-created on first start.
+SQLite con WAL mode. Una sola tabla:
+
+```sql
+spool_usage (id INTEGER PK, job_id TEXT, spool_id INTEGER, filament_mm REAL)
+```
+
+El schema se crea automaticamente en el primer arranque.

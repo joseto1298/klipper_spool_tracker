@@ -5,6 +5,7 @@
 ```bash
 python -m venv .venv
 .venv\Scripts\activate  # Windows
+# source .venv/bin/activate  # Linux
 pip install -r requirements.txt
 python tracker.py                              # run daemon (daemon + HTTP on :8200)
 python query.py spool_usage.db                 # query all usage (local SQLite)
@@ -16,7 +17,9 @@ python query.py --tracker --job 0004E2
 
 ## Config
 
-- `config.json` / `config.example.json` — JSON config with ENV overrides: `MOONRAKER_URL`, `DB_PATH`, `HTTP_HOST`, `HTTP_PORT`
+- `config.json` — local config (gitignored, never overwritten by `git pull`)
+- `config.example.json` — safe template; copied to `config.json` by `install.sh` on first run
+- ENV overrides: `MOONRAKER_URL`, `DB_PATH`, `HTTP_HOST`, `HTTP_PORT`
 - DB auto-prunes to last 100 distinct jobs
 
 ## Architecture
@@ -27,11 +30,12 @@ python query.py --tracker --job 0004E2
 
 ## Service
 
-- `spool-tracker.service` — systemd unit for Raspberry Pi; expects repo at `/home/pi/klipper_spool_tracker`
-- `moonraker-example.cfg` — snippet to copy into `moonraker.conf` for Spoolman + update_manager
+- `spool-tracker.service` — systemd unit; uses `%h` specifier (expands to home of `User=`), all paths relative to `%h/klipper_spool_tracker`
+- `install.sh` — 7-step auto-installer: config → venv → pip → systemd → moonraker snippet → logrotate → done
+- `moonraker-example.cfg` — snippet for `moonraker.conf` with `install_script: install.sh`; auto-installed by `install.sh`
 
 ## Notes
 
 - No tests, no linter, no formatter, no CI — run `python` to verify
 - Schema created on first run via `CREATE TABLE IF NOT EXISTS`
-- Python 3.7+ (asyncio.run)
+- Python 3.8+ (websockets>=12.0 lo requiere)
