@@ -281,10 +281,14 @@ class MoonrakerClient:
         self.last_e_pos = None
         self.job_spool_usage = {}
 
-        # Obtener spool inicial y nombre de impresora
-        status = await self._request("server.spoolman.status")
-        if status:
-            self.current_spool_id = status.get("spool_id")
+        # Obtener spool inicial con reintento
+        for attempt in range(3):
+            status = await self._request("server.spoolman.status")
+            if status and status.get("spool_id") is not None:
+                self.current_spool_id = status.get("spool_id")
+                break
+            if attempt < 2:
+                await asyncio.sleep(2)
 
         logger.info(
             "Trabajo iniciado: %s | %s | Bobina inicial: %s",
