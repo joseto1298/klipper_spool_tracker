@@ -29,7 +29,7 @@ echo "[3/7] Instalando dependencias..."
 echo "[4/7] Instalando systemd service..."
 sudo cp "$SERVICE_FILE" "/etc/systemd/system/$SERVICE_NAME.service"
 sudo systemctl daemon-reload
-sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl enable --now "$SERVICE_NAME"
 
 # 4. Moonraker config snippet
 ORIGINAL_USER="${SUDO_USER:-$USER}"
@@ -68,7 +68,7 @@ sudo cp "$REPO_DIR/$SERVICE_NAME.logrotate" "/etc/logrotate.d/$SERVICE_NAME"
 echo "[7/7] Hecho."
 echo ""
 echo "=== Proximos pasos ==="
-echo "  1. Edita config.json con tu Moonraker WS y Spoolman"
-echo "  2. sudo systemctl start $SERVICE_NAME"
+echo "  1. Revisa config.json (sobre todo moonraker_url)"
+echo "  2. Si cambiaste algo: sudo systemctl restart $SERVICE_NAME"
 echo "  3. sudo journalctl -u $SERVICE_NAME -f  (para ver logs)"
 echo "  4. La API HTTP estara en http://$(hostname -I | awk '{print $1}'):8200/spool_usage"
