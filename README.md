@@ -38,10 +38,11 @@ chmod +x install.sh && ./install.sh
 
 Esto hace todo automaticamente:
 1. Crea `config.json` desde `config.example.json` (si no existe)
-2. Crea `.venv` e instala dependencias
-3. Instala y habilita el systemd service (`spool-tracker`)
-4. Agrega el snippet de Moonraker a `moonraker.conf` (lo detecta en `printer_data/config/` o `klipper_config/`)
-5. Instala logrotate para `/var/log/spool-tracker.log`
+2. Crea `.venv`
+3. Instala dependencias (`pip install`)
+4. Instala, habilita **y arranca** el systemd service (`enable --now`)
+5. Agrega el snippet de Moonraker a `moonraker.conf`
+6. Instala logrotate para `/var/log/spool-tracker.log`
 
 ### Opcion B — manual
 
@@ -53,10 +54,10 @@ cp config.example.json config.json
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# 3. Systemd service
+# 3. Systemd service — instala, habilita para boot y arranca
 sudo cp spool-tracker.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable spool-tracker
+sudo systemctl enable --now spool-tracker.service
 
 # 4. Logrotate
 sudo cp spool-tracker.logrotate /etc/logrotate.d/spool-tracker
@@ -70,9 +71,9 @@ cat moonraker-example.cfg >> ~/printer_data/config/moonraker.conf
 1. **Edita `config.json`** — pon la IP real de tu Moonraker (`moonraker_url`) y Spoolman si aplica.  
    `config.json` esta en `.gitignore` asi que `git pull` nunca lo sobrescribe.
 2. **Edita `moonraker.conf`** — revisa la URL `origin` del repo.
-3. **Inicia el servicio:**
+3. **Si cambiaste config, reinicia:**
    ```bash
-   sudo systemctl start spool-tracker
+   sudo systemctl restart spool-tracker
    sudo journalctl -u spool-tracker -f
    ```
 
