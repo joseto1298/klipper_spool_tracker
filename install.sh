@@ -45,17 +45,25 @@ for candidate in \
 done
 
 if [ -n "$MOONRAKER_CONF" ]; then
-    if grep -q "\[update_manager klipper_spool_tracker\]" "$MOONRAKER_CONF" 2>/dev/null; then
-        echo "[5/7] moonraker.conf ya configurado — omitiendo"
-    else
-        echo "[5/7] Anadiendo snippet a $MOONRAKER_CONF..."
-        {
-            echo ""
-            echo "# Klipper Spool Tracker — anadido por install.sh"
-            cat "$REPO_DIR/moonraker-example.cfg"
-        } >> "$MOONRAKER_CONF"
-        echo "  IMPORTANTE: Revisa y edita origin URL en moonraker.conf antes de reiniciar"
-    fi
+    echo "[5/7] Configurando update_manager en moonraker.conf..."
+    python3 - "$MOONRAKER_CONF" "$REPO_DIR/moonraker-example.cfg" << 'EOF'
+import re, sys
+conf_path, snippet_path = sys.argv[1], sys.argv[2]
+with open(conf_path) as f:
+    content = f.read()
+with open(snippet_path) as f:
+    snippet = f.read()
+pat = r'\[update_manager klipper_spool_tracker\].*?(?=\n\[|\Z)'
+if re.search(pat, content, re.DOTALL):
+    content = re.sub(pat, snippet.strip(), content, re.DOTALL)
+    print("  [update_manager] actualizado")
+else:
+    content += "\n\n# Klipper Spool Tracker — anadido por install.sh\n" + snippet
+    print("  [update_manager] anadido")
+with open(conf_path, 'w') as f:
+    f.write(content)
+EOF
+    echo "  IMPORTANTE: Revisa origin URL en moonraker.conf"
 else
     echo "[5/7] moonraker.conf no encontrado — anade moonraker-example.cfg manualmente"
 fi
