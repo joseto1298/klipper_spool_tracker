@@ -16,7 +16,7 @@ python query.py --tracker --job 0004E2
 
 ## Config
 
-- `config.json` — JSON config with ENV overrides: `MOONRAKER_URL`, `DB_PATH`, `HTTP_HOST`, `HTTP_PORT`
+- `config.json` / `config.example.json` — JSON config with ENV overrides: `MOONRAKER_URL`, `DB_PATH`, `HTTP_HOST`, `HTTP_PORT`
 - DB auto-prunes to last 100 distinct jobs
 
 ## Architecture

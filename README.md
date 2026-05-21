@@ -33,13 +33,13 @@ sudo systemctl enable spool-tracker
 sudo systemctl start spool-tracker
 ```
 
-Edit `config.json` to point to your Moonraker WebSocket before starting.
+Edit `config.json` to point to your Moonraker WebSocket before starting. See `config.example.json` for the default structure.
 
 Add `moonraker-example.cfg` to your `moonraker.conf` to enable Spoolman integration and automatic updates.
 
 ## Config
 
-Edit `config.json`:
+Edit `config.json` (or copy `config.example.json`):
 
 | Variable         | Description                  |
 |------------------|------------------------------|
