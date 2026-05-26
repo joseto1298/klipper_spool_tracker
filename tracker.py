@@ -84,13 +84,36 @@ class Database:
                 filament_mm REAL NOT NULL
             )
         """)
+        # Migración: consolidar filas duplicadas (del guardado delta anterior)
+        # antes de crear el índice único necesario para UPSERT
+        self.conn.execute("""
+            UPDATE spool_usage SET filament_mm = (
+                SELECT ROUND(SUM(s2.filament_mm), 2) FROM spool_usage s2
+                WHERE s2.job_id = spool_usage.job_id
+                AND s2.spool_id = spool_usage.spool_id
+            )
+            WHERE id IN (
+                SELECT MIN(id) FROM spool_usage
+                GROUP BY job_id, spool_id HAVING COUNT(*) > 1
+            )
+        """)
+        self.conn.execute("""
+            DELETE FROM spool_usage WHERE id NOT IN (
+                SELECT MIN(id) FROM spool_usage GROUP BY job_id, spool_id
+            )
+        """)
+        self.conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_spool_usage_job_spool
+            ON spool_usage(job_id, spool_id)
+        """)
         self.conn.commit()
 
-    def save_spool_usage(self, job_id: str, spool_id: int, filament_mm: float):
+    def upsert_spool_usage(self, job_id: str, spool_id: int, filament_mm: float):
         self.conn.execute(
-            """INSERT INTO spool_usage
-               (job_id, spool_id, filament_mm)
-               VALUES (?, ?, ?)""",
+            """INSERT INTO spool_usage (job_id, spool_id, filament_mm)
+               VALUES (?, ?, ?)
+               ON CONFLICT(job_id, spool_id)
+               DO UPDATE SET filament_mm = excluded.filament_mm""",
             (job_id, spool_id, round(filament_mm, 2)),
         )
         self.conn.commit()
@@ -151,7 +174,6 @@ class MoonrakerClient:
         self.current_filename: str = ""
         self.last_e_pos: Optional[float] = None
         self.job_spool_usage: Dict[int, float] = {}
-        self._flushed_spool_usage: Dict[int, float] = {}
 
     # ── Conexion ──────────────────────────────────────────────────────────
 
@@ -287,25 +309,20 @@ class MoonrakerClient:
         self.current_spool_id = new_spool_id
         if new_spool_id is not None and new_spool_id not in self.job_spool_usage:
             self.job_spool_usage[new_spool_id] = 0
-        if new_spool_id is not None and new_spool_id not in self._flushed_spool_usage:
-            self._flushed_spool_usage[new_spool_id] = 0
         logger.info("Bobina activa: %s", new_spool_id)
 
     # ── Flujo periódico ──────────────────────────────────────────────────
 
     def _flush_current_usage(self):
-        """Guarda en SQLite el delta desde el último flush (para no perder
-        datos si hay corte de luz)."""
+        """Guarda en SQLite el total acumulado (UPSERT para mantener
+        una sola fila por job+spool aunque haya corte de luz)."""
         job_id = self.current_job_id
         if job_id is None:
             return
         for spool_id, total_mm in list(self.job_spool_usage.items()):
-            saved = self._flushed_spool_usage.get(spool_id, 0.0)
-            delta = total_mm - saved
-            if delta > 0:
-                self.db.save_spool_usage(job_id, spool_id, delta)
-                self._flushed_spool_usage[spool_id] = total_mm
-                logger.debug("Flujo parcial: bobina %s +%.2f mm", spool_id, delta)
+            if total_mm > 0:
+                self.db.upsert_spool_usage(job_id, spool_id, total_mm)
+                logger.debug("Flujo parcial: bobina %s %.2f mm", spool_id, total_mm)
 
     async def _periodic_flush(self):
         """Corre en background: cada 30s hace flush parcial y reintenta
@@ -346,7 +363,6 @@ class MoonrakerClient:
         self.current_filename = job.get("filename", "")
         self.last_e_pos = None
         self.job_spool_usage = {}
-        self._flushed_spool_usage = {}
 
         # Obtener spool inicial con reintento (backoff hasta ~30s)
         # Spoolman puede tardar en validar la bobina tras iniciar el trabajo
@@ -387,7 +403,6 @@ class MoonrakerClient:
         self.current_spool_id = None
         self.last_e_pos = None
         self.job_spool_usage = {}
-        self._flushed_spool_usage = {}
 
     # ── Utilidades ────────────────────────────────────────────────────────
 
