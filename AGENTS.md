@@ -4,38 +4,40 @@
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # Linux
+.venv\Scripts\activate      # Windows
+# source .venv/bin/activate # Linux
 pip install -r requirements.txt
-python tracker.py                              # run daemon (daemon + HTTP on :8200)
-python query.py spool_usage.db                 # query all usage (local SQLite)
-python query.py spool_usage.db --job 0004E2    # filter by job
-python query.py spool_usage.db --spool 1       # filter by spool
-python query.py --tracker                      # query daemon HTTP API (pull model)
-python query.py --tracker --job 0004E2
+python tracker.py                          # daemon (WS→SQLite + HTTP :8200)
+python query.py spool_usage.db             # query local SQLite
+python query.py spool_usage.db --job JOBID # filter by hex job_id
+python query.py spool_usage.db --spool 1
+python query.py --tracker                  # query daemon HTTP API
+python query.py --tracker --job JOBID
 ```
+
+Verify by running `python tracker.py` — no tests, no linter, no formatter, no CI.
 
 ## Config
 
-- `config.json` — local config (gitignored, never overwritten by `git pull`)
-- `config.example.json` — safe template; copied to `config.json` by `install.sh` on first run
-- ENV overrides: `MOONRAKER_URL`, `DB_PATH`, `HTTP_HOST`, `HTTP_PORT`
-- DB auto-prunes to last 100 distinct jobs
+- `config.json` — gitignored, read from CWD by both `tracker.py` and `query.py`
+- `config.example.json` — template; copied by `install.sh` on first run
+- ENV overrides (`MOONRAKER_URL`, `DB_PATH`, `HTTP_HOST`, `HTTP_PORT`) beat config.json
+- `http.enabled: false` in config.json disables the HTTP server (and `--tracker` queries fail)
+- DB auto-prunes to last 100 distinct jobs; WAL journal mode
 
 ## Architecture
 
-- `tracker.py` — daemon: Moonraker WebSocket → E-axis deltas → SQLite (WAL), plus HTTP server on `:8200` serving `GET /spool_usage` and `GET /health`
-- `query.py` — CLI: reads local SQLite (`query.py db`) or queries daemon HTTP API (`query.py --tracker`)
-- SQLite DB: single table `spool_usage` (`job_id` TEXT, `spool_id` INT, `filament_mm` REAL)
+- `tracker.py` — daemon: connects to Moonraker WebSocket, subscribes to `toolhead.position` E-axis, tracks deltas >0.01mm, saves to SQLite on job finish, serves `GET /spool_usage` and `GET /health` on `:8200` via aiohttp
+- Auto-reconnects to Moonraker on connection loss (5s delay)
+- Retries `server.spoolman.status` 3× with 2s delay at job start to get initial spool_id
+- Signal handling (SIGINT/SIGTERM) caught on Unix; silently ignored on Windows (`NotImplementedError`)
+- `query.py` — two modes: local SQLite file (default) or `--tracker` to query daemon HTTP API (reads config.json for host/port)
+- SQLite: single table `spool_usage` (`id` PK, `job_id` TEXT, `spool_id` INT, `filament_mm` REAL); schema created on first run
+- Only 2 deps: `websockets>=12.0`, `aiohttp>=3.9.0` (Python 3.8+)
 
-## Service
+## Deployment
 
-- `klipper_spool_tracker.service` — systemd unit; uses `%h` specifier (expands to home of `User=`), all paths relative to `%h/klipper_spool_tracker`
-- `install.sh` — 7-step auto-installer: config → venv → pip → systemd → moonraker snippet → logrotate → done
-- `moonraker-example.cfg` — snippet for `moonraker.conf` with `install_script: install.sh`; auto-installed by `install.sh`
-
-## Notes
-
-- No tests, no linter, no formatter, no CI — run `python` to verify
-- Schema created on first run via `CREATE TABLE IF NOT EXISTS`
-- Python 3.8+ (websockets>=12.0 lo requiere)
+- `install.sh` — 7-step auto-installer (config → venv → pip → systemd → moonraker snippet → logrotate → done)
+- `klipper_spool_tracker.service` — systemd unit; `%h` expands to home of `User=pi`; paths relative to `%h/klipper_spool_tracker`
+- `moonraker-example.cfg` — `[update_manager]` snippet with `install_script: install.sh`
+- Logs: `/var/log/spool-tracker.log` + journald (stderr)

@@ -151,11 +151,14 @@ class MoonrakerClient:
         self.current_filename: str = ""
         self.last_e_pos: Optional[float] = None
         self.job_spool_usage: Dict[int, float] = {}
+        self._flushed_spool_usage: Dict[int, float] = {}
 
     # ── Conexion ──────────────────────────────────────────────────────────
 
     async def run(self):
         self._session = aiohttp.ClientSession()
+        delay = 1
+        first_fail = True
         try:
             while self._running:
                 try:
@@ -168,14 +171,31 @@ class MoonrakerClient:
                         await self._identify()
                         await self._subscribe_toolhead()
                         logger.info("Conectado a %s", self.config.moonraker_url)
-                        await self._message_loop()
+                        delay = 1
+                        first_fail = True
+                        flush_task = asyncio.create_task(self._periodic_flush())
+                        try:
+                            await self._message_loop()
+                        finally:
+                            flush_task.cancel()
+                            try:
+                                await flush_task
+                            except asyncio.CancelledError:
+                                pass
                 except websockets.ConnectionClosed:
-                    logger.warning("Conexion perdida, reconectando en 5s...")
+                    if first_fail:
+                        logger.warning("Conexion perdida — reintentando...")
+                        first_fail = False
                 except asyncio.CancelledError:
                     break
                 except Exception as exc:
-                    logger.error("Error: %s, reconectando en 5s...", exc)
-                await asyncio.sleep(5)
+                    if first_fail:
+                        logger.warning("Error de conexion: %s — reintentando...", exc)
+                        first_fail = False
+                    else:
+                        logger.debug("Error de conexion: %s (reintento en %ds)", exc, delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 60)
         finally:
             if self._session:
                 await self._session.close()
@@ -267,7 +287,32 @@ class MoonrakerClient:
         self.current_spool_id = new_spool_id
         if new_spool_id is not None and new_spool_id not in self.job_spool_usage:
             self.job_spool_usage[new_spool_id] = 0
+        if new_spool_id is not None and new_spool_id not in self._flushed_spool_usage:
+            self._flushed_spool_usage[new_spool_id] = 0
         logger.info("Bobina activa: %s", new_spool_id)
+
+    # ── Flujo periódico ──────────────────────────────────────────────────
+
+    def _flush_current_usage(self):
+        """Guarda en SQLite el delta desde el último flush (para no perder
+        datos si hay corte de luz)."""
+        job_id = self.current_job_id
+        if job_id is None:
+            return
+        for spool_id, total_mm in list(self.job_spool_usage.items()):
+            saved = self._flushed_spool_usage.get(spool_id, 0.0)
+            delta = total_mm - saved
+            if delta > 0:
+                self.db.save_spool_usage(job_id, spool_id, delta)
+                self._flushed_spool_usage[spool_id] = total_mm
+                logger.debug("Flujo parcial: bobina %s +%.2f mm", spool_id, delta)
+
+    async def _periodic_flush(self):
+        """Corre en background: hace un flush cada 30s mientras hay trabajo."""
+        while self._running:
+            await asyncio.sleep(30)
+            if self.current_job_id is not None and self.job_spool_usage:
+                self._flush_current_usage()
 
     async def _on_history_changed(self, params: Dict):
         """Eventos de inicio/fin de trabajo."""
@@ -288,6 +333,7 @@ class MoonrakerClient:
         self.current_filename = job.get("filename", "")
         self.last_e_pos = None
         self.job_spool_usage = {}
+        self._flushed_spool_usage = {}
 
         # Obtener spool inicial con reintento
         for attempt in range(3):
@@ -308,6 +354,8 @@ class MoonrakerClient:
         if job_id is None or job_id != self.current_job_id:
             return
 
+        self._flush_current_usage()
+
         logger.info(
             "Trabajo finalizado: %s | Bobinas: %s",
             job_id, dict(self.job_spool_usage),
@@ -315,7 +363,6 @@ class MoonrakerClient:
 
         for spool_id, mm in self.job_spool_usage.items():
             if mm > 0:
-                self.db.save_spool_usage(job_id, spool_id, mm)
                 logger.info("  Bobina %s: %.2f mm", spool_id, mm)
 
         self.db.prune()
@@ -324,6 +371,7 @@ class MoonrakerClient:
         self.current_spool_id = None
         self.last_e_pos = None
         self.job_spool_usage = {}
+        self._flushed_spool_usage = {}
 
     # ── Utilidades ────────────────────────────────────────────────────────
 
