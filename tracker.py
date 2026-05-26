@@ -308,10 +308,23 @@ class MoonrakerClient:
                 logger.debug("Flujo parcial: bobina %s +%.2f mm", spool_id, delta)
 
     async def _periodic_flush(self):
-        """Corre en background: hace un flush cada 30s mientras hay trabajo."""
+        """Corre en background: cada 30s hace flush parcial y reintenta
+        obtener spool_id si aún es None (ASSERT_ACTIVE_FILAMENT puede
+        tardar minutos en ejecutarse tras START_PRINT)."""
         while self._running:
             await asyncio.sleep(30)
-            if self.current_job_id is not None and self.job_spool_usage:
+            if self.current_job_id is None:
+                continue
+            if self.current_spool_id is None and self.ws is not None:
+                status = await self._request("server.spoolman.status")
+                if status and status.get("spool_id") is not None:
+                    self.current_spool_id = status.get("spool_id")
+                    logger.info(
+                        "Bobina recuperada durante trabajo: %s",
+                        self.current_spool_id,
+                    )
+                    self.last_e_pos = None
+            if self.current_spool_id is not None and self.job_spool_usage:
                 self._flush_current_usage()
 
     async def _on_history_changed(self, params: Dict):
@@ -335,14 +348,17 @@ class MoonrakerClient:
         self.job_spool_usage = {}
         self._flushed_spool_usage = {}
 
-        # Obtener spool inicial con reintento
-        for attempt in range(3):
+        # Obtener spool inicial con reintento (backoff hasta ~30s)
+        # Spoolman puede tardar en validar la bobina tras iniciar el trabajo
+        retry_delay = 2
+        for attempt in range(7):
             status = await self._request("server.spoolman.status")
             if status and status.get("spool_id") is not None:
                 self.current_spool_id = status.get("spool_id")
                 break
-            if attempt < 2:
-                await asyncio.sleep(2)
+            if attempt < 6:
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 1.5, 10)  # 2→3→4.5→6.75→10→10s
 
         logger.info(
             "Trabajo iniciado: %s | %s | Bobina inicial: %s",
