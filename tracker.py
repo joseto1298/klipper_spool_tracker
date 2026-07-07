@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Klipper Spool Tracker — Rastrea consumo real de filamento por bobina
-via WebSocket de Moonraker, independiente de Odoo.
+Klipper Spool Tracker — tracks real filament consumption per spool
+via Moonraker WebSocket, independent of Odoo.
 """
 import asyncio
 import json
@@ -11,7 +11,7 @@ import os
 import sqlite3
 import signal
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 from aiohttp import web
@@ -28,7 +28,10 @@ try:
     _fh.setFormatter(logging.Formatter(_LOG_FORMAT))
     logger.addHandler(_fh)
 except OSError:
-    pass  # log file no disponible (entorno Windows, etc.)
+    pass  # log file not available (Windows, etc.)
+
+_DEFAULT_HTTP_PORT = 8200
+_CHECKPOINT_INTERVAL = 30  # seconds between DB checkpoint writes (power-loss safety)
 
 
 # ─── Config ────────────────────────────────────────────────────────────────
@@ -39,7 +42,7 @@ class Config:
     moonraker_url: str = "ws://localhost:7125/websocket"
     db_path: str = "spool_usage.db"
     http_host: str = "0.0.0.0"
-    http_port: int = 8200
+    http_port: int = _DEFAULT_HTTP_PORT
 
     @classmethod
     def load(cls, path: str = "config.json") -> "Config":
@@ -49,14 +52,33 @@ class Config:
                 with open(path) as f:
                     data = json.load(f)
             except json.JSONDecodeError as exc:
-                logger.warning("Config %s invalido: %s — usando defaults", path, exc)
+                logger.warning("Config %s is invalid: %s — using defaults", path, exc)
                 return cfg
-            cfg.moonraker_url = data.get("moonraker_url", cfg.moonraker_url)
-            cfg.db_path = data.get("db_path", cfg.db_path)
+            raw_url = data.get("moonraker_url")
+            if raw_url is not None and not isinstance(raw_url, str):
+                logger.warning("moonraker_url must be a string, got %s — using default", type(raw_url).__name__)
+            else:
+                cfg.moonraker_url = raw_url if raw_url is not None else cfg.moonraker_url
+
+            raw_db = data.get("db_path")
+            if raw_db is not None and not isinstance(raw_db, str):
+                logger.warning("db_path must be a string, got %s — using default", type(raw_db).__name__)
+            else:
+                cfg.db_path = raw_db if raw_db is not None else cfg.db_path
+
             http = data.get("http", {})
             if http.get("enabled", True):
-                cfg.http_host = http.get("host", cfg.http_host)
-                cfg.http_port = http.get("port", cfg.http_port)
+                raw_host = http.get("host")
+                if raw_host is not None and not isinstance(raw_host, str):
+                    logger.warning("http.host must be a string, got %s — using default", type(raw_host).__name__)
+                else:
+                    cfg.http_host = raw_host if raw_host is not None else cfg.http_host
+
+                raw_port = http.get("port")
+                if raw_port is not None and not isinstance(raw_port, (int, float)):
+                    logger.warning("http.port must be a number, got %s — using default", type(raw_port).__name__)
+                else:
+                    cfg.http_port = int(raw_port) if raw_port is not None else cfg.http_port
         # ENV overrides
         cfg.moonraker_url = os.environ.get("MOONRAKER_URL", cfg.moonraker_url)
         cfg.db_path = os.environ.get("DB_PATH", cfg.db_path)
@@ -69,11 +91,16 @@ class Config:
 
 
 class Database:
-    def __init__(self, path: str):
+    def __init__(self, path: str) -> None:
         self.path = path
         self.conn: Optional[sqlite3.Connection] = None
 
-    def open(self):
+    def open(self) -> None:
+        db_dir = os.path.dirname(self.path) or "."
+        if not os.path.exists(db_dir):
+            raise OSError(f"Directory {db_dir} does not exist")
+        if not os.access(db_dir, os.W_OK):
+            raise OSError(f"Directory {db_dir} is not writable")
         self.conn = sqlite3.connect(self.path, timeout=5)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("""
@@ -84,8 +111,8 @@ class Database:
                 filament_mm REAL NOT NULL
             )
         """)
-        # Migración: consolidar filas duplicadas (del guardado delta anterior)
-        # antes de crear el índice único necesario para UPSERT
+        # Migration: consolidate duplicate rows from earlier delta-only saves
+        # before creating the unique index needed for UPSERT
         self.conn.execute("""
             UPDATE spool_usage SET filament_mm = (
                 SELECT ROUND(SUM(s2.filament_mm), 2) FROM spool_usage s2
@@ -108,7 +135,7 @@ class Database:
         """)
         self.conn.commit()
 
-    def upsert_spool_usage(self, job_id: str, spool_id: int, filament_mm: float):
+    def upsert_spool_usage(self, job_id: str, spool_id: int, filament_mm: float) -> None:
         self.conn.execute(
             """INSERT INTO spool_usage (job_id, spool_id, filament_mm)
                VALUES (?, ?, ?)
@@ -118,7 +145,7 @@ class Database:
         )
         self.conn.commit()
 
-    def prune(self, keep_jobs: int = 100):
+    def prune(self, keep_jobs: int = 100) -> None:
         cur = self.conn.execute("""
             SELECT job_id FROM spool_usage
             GROUP BY job_id
@@ -133,9 +160,9 @@ class Database:
                 old,
             )
             self.conn.commit()
-            logger.info("Podados %s jobs antiguos", len(old))
+            logger.info("Pruned %s old jobs", len(old))
 
-    def query(self, job_id: str = None, spool_id: int = None) -> list:
+    def query(self, job_id: Optional[str] = None, spool_id: Optional[int] = None) -> List[Dict[str, Any]]:
         cur = self.conn.execute(
             "SELECT job_id, spool_id, SUM(filament_mm) "
             "FROM spool_usage "
@@ -150,7 +177,7 @@ class Database:
             for r in cur.fetchall()
         ]
 
-    def close(self):
+    def close(self) -> None:
         if self.conn:
             self.conn.close()
 
@@ -159,7 +186,7 @@ class Database:
 
 
 class MoonrakerClient:
-    def __init__(self, config: Config, db: Database):
+    def __init__(self, config: Config, db: Database) -> None:
         self.config = config
         self.db = db
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
@@ -167,17 +194,18 @@ class MoonrakerClient:
         self._pending: Dict[int, asyncio.Future] = {}
         self._req_id = 0
         self._running = True
+        self.connected: bool = False
 
-        # Estado del trabajo actual
+        # Current job state
         self.current_job_id: Optional[str] = None
         self.current_spool_id: Optional[int] = None
         self.current_filename: str = ""
         self.last_e_pos: Optional[float] = None
         self.job_spool_usage: Dict[int, float] = {}
 
-    # ── Conexion ──────────────────────────────────────────────────────────
+    # ── Connection ─────────────────────────────────────────────────────────
 
-    async def run(self):
+    async def run(self) -> None:
         self._session = aiohttp.ClientSession()
         delay = 1
         first_fail = True
@@ -192,37 +220,40 @@ class MoonrakerClient:
                         self.ws = ws
                         await self._identify()
                         await self._subscribe_toolhead()
-                        logger.info("Conectado a %s", self.config.moonraker_url)
+                        logger.info("Connected to %s", self.config.moonraker_url)
+                        self.connected = True
                         delay = 1
                         first_fail = True
-                        flush_task = asyncio.create_task(self._periodic_flush())
+                        checkpoint_task = asyncio.create_task(self._periodic_checkpoint())
                         try:
                             await self._message_loop()
                         finally:
-                            flush_task.cancel()
+                            checkpoint_task.cancel()
                             try:
-                                await flush_task
+                                await checkpoint_task
                             except asyncio.CancelledError:
                                 pass
                 except websockets.ConnectionClosed:
+                    self.connected = False
                     if first_fail:
-                        logger.warning("Conexion perdida — reintentando...")
+                        logger.warning("Connection lost — reconnecting...")
                         first_fail = False
                 except asyncio.CancelledError:
                     break
                 except Exception as exc:
+                    self.connected = False
                     if first_fail:
-                        logger.warning("Error de conexion: %s — reintentando...", exc)
+                        logger.warning("Connection error: %s — reconnecting...", exc)
                         first_fail = False
                     else:
-                        logger.debug("Error de conexion: %s (reintento en %ds)", exc, delay)
+                        logger.debug("Connection error: %s (retry in %ds)", exc, delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60)
         finally:
             if self._session:
                 await self._session.close()
 
-    async def _identify(self):
+    async def _identify(self) -> None:
         await self._send_json({
             "jsonrpc": "2.0",
             "method": "connection.identify",
@@ -232,7 +263,7 @@ class MoonrakerClient:
             },
         })
 
-    async def _subscribe_toolhead(self):
+    async def _subscribe_toolhead(self) -> None:
         await self._send_json({
             "jsonrpc": "2.0",
             "method": "printer.objects.subscribe",
@@ -244,16 +275,16 @@ class MoonrakerClient:
             "id": self._next_id(),
         })
 
-    # ── Mensajes ──────────────────────────────────────────────────────────
+    # ── Messages ───────────────────────────────────────────────────────────
 
-    async def _message_loop(self):
+    async def _message_loop(self) -> None:
         async for raw in self.ws:
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
                 continue
 
-            # Respuesta a request nuestra
+            # Response to our own request
             if "id" in data:
                 fut = self._pending.pop(data["id"], None)
                 if fut and not fut.done():
@@ -265,14 +296,14 @@ class MoonrakerClient:
             if method == "notify_status_update":
                 self._on_status_update(data.get("params", [None])[0])
             elif method == "notify_active_spool_set":
-                self._on_spool_changed(data.get("params", [{}])[0])
+                await self._on_spool_changed(data.get("params", [{}])[0])
             elif method == "notify_history_changed":
                 await self._on_history_changed(data.get("params", [{}])[0])
 
-    # ── Eventos ──────────────────────────────────────────────────────────
+    # ── Events ─────────────────────────────────────────────────────────────
 
-    def _on_status_update(self, status: Optional[Dict]):
-        """Recibe actualizacion de estado de Klipper cada ~250ms."""
+    def _on_status_update(self, status: Optional[Dict[str, Any]]) -> None:
+        """Receives Klipper status updates every ~250ms."""
         if not status or self.current_job_id is None:
             return
         if self.current_spool_id is None:
@@ -288,48 +319,52 @@ class MoonrakerClient:
         e_pos = pos[3]
         if self.last_e_pos is not None:
             delta = e_pos - self.last_e_pos
-            if delta > 0.01:  # ignorar ruido sub-micron
+            if delta > 0.01:  # ignore sub-micron noise
                 self.job_spool_usage[self.current_spool_id] = \
                     self.job_spool_usage.get(self.current_spool_id, 0) + delta
         self.last_e_pos = e_pos
 
-    def _on_spool_changed(self, params: Optional[Dict]):
-        """Cambio de bobina activa detectado por Moonraker."""
+    async def _on_spool_changed(self, params: Optional[Dict[str, Any]]) -> None:
+        """Active spool change detected by Moonraker."""
         if not params:
             return
         new_spool_id = params.get("spool_id")
         if new_spool_id == self.current_spool_id:
             return
+
+        # Flush previous spool data immediately before switching
         if self.current_spool_id is not None:
             logger.info(
-                "  Bobina %s hasta ahora: %.2f mm",
+                "  Spool %s so far: %.2f mm — flushing",
                 self.current_spool_id,
                 self.job_spool_usage.get(self.current_spool_id, 0),
             )
+            self._flush_current_usage()
+
         self.current_spool_id = new_spool_id
         if new_spool_id is not None and new_spool_id not in self.job_spool_usage:
             self.job_spool_usage[new_spool_id] = 0
-        logger.info("Bobina activa: %s", new_spool_id)
+        logger.info("Active spool: %s", new_spool_id)
 
-    # ── Flujo periódico ──────────────────────────────────────────────────
+    # ── Checkpoint ─────────────────────────────────────────────────────────
 
-    def _flush_current_usage(self):
-        """Guarda en SQLite el total acumulado (UPSERT para mantener
-        una sola fila por job+spool aunque haya corte de luz)."""
+    def _flush_current_usage(self) -> None:
+        """Saves accumulated usage to SQLite (UPSERT keeps one row per
+        job+spool even after power loss)."""
         job_id = self.current_job_id
         if job_id is None:
             return
         for spool_id, total_mm in list(self.job_spool_usage.items()):
             if total_mm > 0:
                 self.db.upsert_spool_usage(job_id, spool_id, total_mm)
-                logger.debug("Flujo parcial: bobina %s %.2f mm", spool_id, total_mm)
+                logger.debug("Checkpoint: spool %s %.2f mm", spool_id, total_mm)
 
-    async def _periodic_flush(self):
-        """Corre en background: cada 30s hace flush parcial y reintenta
-        obtener spool_id si aún es None (ASSERT_ACTIVE_FILAMENT puede
-        tardar minutos en ejecutarse tras START_PRINT)."""
+    async def _periodic_checkpoint(self) -> None:
+        """Runs in background: every 30s writes a checkpoint and retries
+        spool_id if still None (ASSERT_ACTIVE_FILAMENT may take minutes
+        after START_PRINT)."""
         while self._running:
-            await asyncio.sleep(30)
+            await asyncio.sleep(_CHECKPOINT_INTERVAL)
             if self.current_job_id is None:
                 continue
             if self.current_spool_id is None and self.ws is not None:
@@ -337,15 +372,15 @@ class MoonrakerClient:
                 if status and status.get("spool_id") is not None:
                     self.current_spool_id = status.get("spool_id")
                     logger.info(
-                        "Bobina recuperada durante trabajo: %s",
+                        "Spool recovered during job: %s",
                         self.current_spool_id,
                     )
                     self.last_e_pos = None
             if self.current_spool_id is not None and self.job_spool_usage:
                 self._flush_current_usage()
 
-    async def _on_history_changed(self, params: Dict):
-        """Eventos de inicio/fin de trabajo."""
+    async def _on_history_changed(self, params: Dict[str, Any]) -> None:
+        """Job start/finish events."""
         action = params.get("action")
         job = params.get("job", {})
 
@@ -354,18 +389,18 @@ class MoonrakerClient:
         elif action == "finished":
             await self._finish_job(job)
 
-    async def _start_job(self, job: Dict):
+    async def _start_job(self, job: Dict[str, Any]) -> None:
         job_id = job.get("job_id")
         if job_id is None:
-            logger.warning("Evento 'added' sin job_id — ignorado")
+            logger.warning("'added' event without job_id — ignored")
             return
         self.current_job_id = job_id
         self.current_filename = job.get("filename", "")
         self.last_e_pos = None
         self.job_spool_usage = {}
 
-        # Obtener spool inicial con reintento (backoff hasta ~30s)
-        # Spoolman puede tardar en validar la bobina tras iniciar el trabajo
+        # Retry spool lookup with backoff (~30s total)
+        # Spoolman may take time to validate the spool after job start
         retry_delay = 2
         for attempt in range(7):
             status = await self._request("server.spoolman.status")
@@ -377,11 +412,11 @@ class MoonrakerClient:
                 retry_delay = min(retry_delay * 1.5, 10)  # 2→3→4.5→6.75→10→10s
 
         logger.info(
-            "Trabajo iniciado: %s | %s | Bobina inicial: %s",
+            "Job started: %s | %s | Initial spool: %s",
             self.current_job_id, self.current_filename, self.current_spool_id,
         )
 
-    async def _finish_job(self, job: Dict):
+    async def _finish_job(self, job: Dict[str, Any]) -> None:
         job_id = job.get("job_id")
         if job_id is None or job_id != self.current_job_id:
             return
@@ -389,13 +424,13 @@ class MoonrakerClient:
         self._flush_current_usage()
 
         logger.info(
-            "Trabajo finalizado: %s | Bobinas: %s",
+            "Job finished: %s | Spools: %s",
             job_id, dict(self.job_spool_usage),
         )
 
         for spool_id, mm in self.job_spool_usage.items():
             if mm > 0:
-                logger.info("  Bobina %s: %.2f mm", spool_id, mm)
+                logger.info("  Spool %s: %.2f mm", spool_id, mm)
 
         self.db.prune()
 
@@ -404,13 +439,13 @@ class MoonrakerClient:
         self.last_e_pos = None
         self.job_spool_usage = {}
 
-    # ── Utilidades ────────────────────────────────────────────────────────
+    # ── Utilities ──────────────────────────────────────────────────────────
 
     def _next_id(self) -> int:
         self._req_id += 1
         return self._req_id
 
-    async def _request(self, method: str, params: Optional[Dict] = None
+    async def _request(self, method: str, params: Optional[Dict[str, Any]] = None
                        ) -> Optional[Any]:
         req_id = self._next_id()
         fut = asyncio.get_running_loop().create_future()
@@ -427,12 +462,12 @@ class MoonrakerClient:
             self._pending.pop(req_id, None)
             return None
 
-    async def _send_json(self, data: Dict):
+    async def _send_json(self, data: Dict[str, Any]) -> None:
         if self.ws is None:
             return
         await self.ws.send(json.dumps(data))
 
-    async def stop(self):
+    async def stop(self) -> None:
         self._running = False
         if self.ws:
             await self.ws.close()
@@ -442,30 +477,38 @@ class MoonrakerClient:
 
 
 class SpoolHTTPServer:
-    def __init__(self, config: Config, db: Database):
+    def __init__(self, config: Config, db: Database, client: MoonrakerClient) -> None:
         self.config = config
         self.db = db
+        self.client = client
         self.app = web.Application()
         self.app.router.add_get("/spool_usage", self.handle_query)
         self.app.router.add_get("/health", self.handle_health)
         self._runner: Optional[web.AppRunner] = None
 
-    async def start(self):
+    async def start(self) -> None:
         self._runner = web.AppRunner(self.app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.config.http_host, self.config.http_port)
-        await site.start()
+        try:
+            await site.start()
+        except OSError as exc:
+            logger.error(
+                "Failed to bind HTTP server on %s:%s — %s",
+                self.config.http_host, self.config.http_port, exc,
+            )
+            raise
         logger.info(
-            "Servidor HTTP escuchando en %s:%s",
+            "HTTP server listening on %s:%s",
             self.config.http_host, self.config.http_port,
         )
 
-    async def stop(self):
+    async def stop(self) -> None:
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
 
-    async def handle_query(self, request):
+    async def handle_query(self, request: web.Request) -> web.Response:
         job_id = request.query.get("job_id")
         spool_id = request.query.get("spool_id")
         if spool_id is not None:
@@ -473,29 +516,34 @@ class SpoolHTTPServer:
                 spool_id = int(spool_id)
             except (ValueError, TypeError):
                 return web.json_response(
-                    {"error": "spool_id debe ser entero"}, status=400,
+                    {"error": "spool_id must be an integer"}, status=400,
                 )
         rows = self.db.query(job_id=job_id, spool_id=spool_id)
         return web.json_response(rows)
 
-    async def handle_health(self, request):
-        return web.json_response({"status": "ok"})
+    async def handle_health(self, request: web.Request) -> web.Response:
+        if self.client.connected:
+            return web.json_response({"status": "ok", "moonraker": "connected"})
+        return web.json_response(
+            {"status": "degraded", "moonraker": "disconnected"},
+            status=503,
+        )
 
 
 # ─── Main ──────────────────────────────────────────────────────────────────
 
 
-async def main():
+async def main() -> None:
     config = Config.load()
     db = Database(config.db_path)
     db.open()
 
     client = MoonrakerClient(config, db)
-    httpd = SpoolHTTPServer(config, db)
+    httpd = SpoolHTTPServer(config, db, client)
 
     loop = asyncio.get_running_loop()
 
-    async def stop_all():
+    async def stop_all() -> None:
         await client.stop()
         await httpd.stop()
 
@@ -503,16 +551,16 @@ async def main():
         try:
             loop.add_signal_handler(sig, lambda: asyncio.create_task(stop_all()))
         except NotImplementedError:
-            pass  # Windows no soporta add_signal_handler
+            pass  # Windows does not support add_signal_handler
 
     await httpd.start()
-    logger.info("Klipper Spool Tracker iniciado")
+    logger.info("Klipper Spool Tracker started")
     try:
         await client.run()
     finally:
         await httpd.stop()
         db.close()
-        logger.info("Detenido")
+        logger.info("Stopped")
 
 
 if __name__ == "__main__":

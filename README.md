@@ -1,9 +1,9 @@
 # Klipper Spool Tracker
 
 Tracks real filament consumption per spool by connecting to a Moonraker (Klipper) WebSocket.
-Serves data via HTTP GET on port 8200 for Odoo to consume (pull model).
+Serves data via HTTP GET on port 8200 for external systems to consume (pull model).
 
-## Setup (desarrollo)
+## Development Setup
 
 ```bash
 python -m venv .venv
@@ -15,11 +15,11 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python tracker.py                              # inicia daemon (HTTP en :8200)
-python query.py spool_usage.db                 # consulta toda la DB local
-python query.py spool_usage.db --job 0004E2    # filtrar por trabajo
-python query.py spool_usage.db --spool 1       # filtrar por bobina
-python query.py --tracker                      # consultar via HTTP API del daemon
+python tracker.py                              # start daemon (HTTP on :8200)
+python query.py spool_usage.db                 # query local SQLite DB
+python query.py spool_usage.db --job 0004E2    # filter by job
+python query.py spool_usage.db --spool 1       # filter by spool
+python query.py --tracker                      # query via daemon HTTP API
 ```
 
 ## Deployment (Raspberry Pi / Linux)
@@ -30,31 +30,31 @@ git clone <repo-url> klipper_spool_tracker
 cd klipper_spool_tracker
 ```
 
-### Opcion A — automatica (recomendada)
+### Option A — automatic (recommended)
 
 ```bash
 chmod +x install.sh && ./install.sh
 ```
 
-Esto hace todo automaticamente:
-1. Crea `config.json` desde `config.example.json` (si no existe)
-2. Crea `.venv`
-3. Instala dependencias (`pip install`)
-4. Instala, habilita **y arranca** el systemd service (`enable --now`)
-5. Agrega el snippet de Moonraker a `moonraker.conf`
-6. Instala logrotate para `/var/log/spool-tracker.log`
+This does everything automatically:
+1. Creates `config.json` from `config.example.json` (if it doesn't exist)
+2. Creates `.venv`
+3. Installs dependencies (`pip install`)
+4. Installs, enables **and starts** the systemd service (`enable --now`)
+5. Adds the Moonraker snippet to `moonraker.conf`
+6. Installs logrotate for `/var/log/spool-tracker.log`
 
-### Opcion B — manual
+### Option B — manual
 
 ```bash
 # 1. Config
 cp config.example.json config.json
 
-# 2. Entorno virtual
+# 2. Virtual environment
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# 3. Systemd service — instala, habilita para boot y arranca
+# 3. Systemd service — install, enable on boot, and start
 sudo cp klipper_spool_tracker.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now klipper_spool_tracker.service
@@ -62,16 +62,16 @@ sudo systemctl enable --now klipper_spool_tracker.service
 # 4. Logrotate
 sudo cp klipper_spool_tracker.logrotate /etc/logrotate.d/klipper_spool_tracker
 
-# 5. Moonraker — copia el snippet a tu moonraker.conf
+# 5. Moonraker — append the snippet to your moonraker.conf
 cat moonraker-example.cfg >> ~/printer_data/config/moonraker.conf
 ```
 
-### Post-instalacion
+### Post-installation
 
-1. **Edita `config.json`** — pon la IP real de tu Moonraker (`moonraker_url`) y Spoolman si aplica.  
-   `config.json` esta en `.gitignore` asi que `git pull` nunca lo sobrescribe.
-2. **Edita `moonraker.conf`** — revisa la URL `origin` del repo.
-3. **Si cambiaste config, reinicia:**
+1. **Edit `config.json`** — set your Moonraker IP (`moonraker_url`) and Spoolman if applicable.  
+   `config.json` is in `.gitignore` so `git pull` never overwrites it.
+2. **Edit `moonraker.conf`** — check the `origin` URL of the repo.
+3. **If you changed config, restart:**
    ```bash
    sudo systemctl restart klipper_spool_tracker
    sudo journalctl -u klipper_spool_tracker -f
@@ -79,33 +79,34 @@ cat moonraker-example.cfg >> ~/printer_data/config/moonraker.conf
 
 ## Config
 
-Edita `config.json` (se crea desde `config.example.json` si no existe):
+Edit `config.json` (created from `config.example.json` if it doesn't exist):
 
-| Variable         | Descripcion                     | Default                        |
-|------------------|---------------------------------|--------------------------------|
-| `MOONRAKER_URL`  | WebSocket de Moonraker          | `ws://localhost:7125/websocket`|
-| `DB_PATH`        | Ruta a la DB SQLite             | `spool_usage.db`               |
-| `HTTP_HOST`      | Bind address del servidor HTTP  | `0.0.0.0`                      |
-| `HTTP_PORT`      | Puerto del servidor HTTP        | `8200`                         |
+| Variable        | Description                    | Default                        |
+|-----------------|--------------------------------|--------------------------------|
+| `MOONRAKER_URL` | Moonraker WebSocket URL        | `ws://localhost:7125/websocket`|
+| `DB_PATH`       | SQLite database path           | `spool_usage.db`               |
+| `HTTP_HOST`     | HTTP server bind address       | `0.0.0.0`                      |
+| `HTTP_PORT`     | HTTP server port               | `8200`                         |
 
-Las variables de entorno tienen prioridad sobre `config.json`.
+Environment variables take precedence over `config.json`.
 
-La DB se poda automaticamente a los ultimos 100 jobs distintos.  
-Los logs van a `/var/log/spool-tracker.log` (rotacion diaria via `spool-tracker.logrotate`) y a journald (stderr).
+The DB auto-prunes to the last 100 distinct jobs.  
+A checkpoint is written to SQLite every 30s during active jobs (power-loss safety) and immediately on spool change.  
+Logs go to `/var/log/spool-tracker.log` (daily rotation via `spool-tracker.logrotate`) and journald (stderr).
 
 ## HTTP Endpoints
 
 - `GET /health` — health check (`{"status": "ok"}`)
-- `GET /spool_usage` — todos los registros
-- `GET /spool_usage?job_id=0004E2` — filtrar por job
-- `GET /spool_usage?spool_id=1` — filtrar por bobina
+- `GET /spool_usage` — all records
+- `GET /spool_usage?job_id=0004E2` — filter by job
+- `GET /spool_usage?spool_id=1` — filter by spool
 
 ## Database
 
-SQLite con WAL mode. Una sola tabla:
+SQLite with WAL mode. A single table:
 
 ```sql
 spool_usage (id INTEGER PK, job_id TEXT, spool_id INTEGER, filament_mm REAL)
 ```
 
-El schema se crea automaticamente en el primer arranque.
+The schema is created automatically on first run.

@@ -27,17 +27,18 @@ Verify by running `python tracker.py` — no tests, no linter, no formatter, no 
 
 ## Architecture
 
-- `tracker.py` — daemon: connects to Moonraker WebSocket, subscribes to `toolhead.position` E-axis, tracks deltas >0.01mm, saves to SQLite on job finish, serves `GET /spool_usage` and `GET /health` on `:8200` via aiohttp
-- Auto-reconnects to Moonraker on connection loss (5s delay)
-- Retries `server.spoolman.status` 3× with 2s delay at job start to get initial spool_id
+- `tracker.py` — daemon: connects to Moonraker WebSocket, subscribes to `toolhead.position` E-axis, tracks deltas >0.01mm, saves to SQLite on job finish, checkpoint every 30s, and immediately on spool change; serves `GET /spool_usage` and `GET /health` on `:8200` via aiohttp
+- Auto-reconnects to Moonraker on connection loss (backoff 1→60s, only first failure logged per cycle)
+- Retries `server.spoolman.status` 7× with backoff 2→10s at job start to get initial spool_id
+- Event `notify_active_spool_set` flushes current spool data to DB immediately before switching
 - Signal handling (SIGINT/SIGTERM) caught on Unix; silently ignored on Windows (`NotImplementedError`)
 - `query.py` — two modes: local SQLite file (default) or `--tracker` to query daemon HTTP API (reads config.json for host/port)
-- SQLite: single table `spool_usage` (`id` PK, `job_id` TEXT, `spool_id` INT, `filament_mm` REAL); schema created on first run
+- SQLite: single table `spool_usage` (`id` PK, `job_id` TEXT, `spool_id` INT, `filament_mm` REAL); schema created on first run; UPSERT keeps one row per job+spool across restarts
 - Only 2 deps: `websockets>=12.0`, `aiohttp>=3.9.0` (Python 3.8+)
 
 ## Deployment
 
 - `install.sh` — 7-step auto-installer (config → venv → pip → systemd → moonraker snippet → logrotate → done)
-- `klipper_spool_tracker.service` — systemd unit; `%h` expands to home of `User=pi`; paths relative to `%h/klipper_spool_tracker`
+- `klipper_spool_tracker.service` — systemd unit; `User=pi` hardcoded; paths relative to `/home/pi/klipper_spool_tracker`
 - `moonraker-example.cfg` — `[update_manager]` snippet with `install_script: install.sh`
 - Logs: `/var/log/spool-tracker.log` + journald (stderr)
