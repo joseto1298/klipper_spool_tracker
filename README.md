@@ -3,6 +3,55 @@
 Tracks real filament consumption per spool by connecting to a Moonraker (Klipper) WebSocket.
 Serves data via HTTP GET on port 8200 for external systems to consume (pull model).
 
+## How it works
+
+```
+┌─────────────┐    WebSocket     ┌────────────────┐    SQLite    ┌──────────┐
+│  Moonraker   │ ──────────────→ │  tracker.py    │ ──────────→ │  .db     │
+│  (Klipper)   │                 │  (daemon)      │             │          │
+└─────────────┘                  └────────┬───────┘             └──────────┘
+                                          │ HTTP :8200
+                                          ▼
+                                   ┌──────────────┐
+                                   │  query.py     │
+                                   │  (CLI o API)  │
+                                   └──────────────┘
+```
+
+### Daemon (`tracker.py`)
+
+Runs as a systemd service and does 3 things simultaneously:
+
+1. **Moonraker WebSocket client** — subscribes to `toolhead.position` (E-axis updates every ~250ms) and listens for job/spool events.
+2. **Filament calculator** — each E-axis update computes `delta = E_now - E_prev`; if `delta > 0.01mm` it's real extrusion (sub-micron noise is ignored). Accumulated mm per spool is tracked in memory.
+3. **HTTP server** — serves `GET /spool_usage` and `GET /health` on port 8200.
+
+### Job lifecycle
+
+```
+1. notify_history_changed(action="added")
+   → saves job_id, retries spool_id from Spoolman (7 attempts, backoff 2→10s)
+
+2. notify_status_update (every ~250ms)
+   → delta E → accumulate mm per active spool
+
+3. Every 30s
+   → checkpoint to SQLite (power-loss safety)
+
+4. notify_active_spool_set (spool change)
+   → flush previous spool data, switch to new spool
+
+5. notify_history_changed(action="finished")
+   → final flush + prune old jobs (>100)
+```
+
+### Crash safety
+
+- **Checkpoints every 30s** — max data loss on power failure is 30 seconds.
+- **UPSERT** — if the daemon restarts mid-job, the accumulated value replaces the old row.
+- **Auto-reconnect** — exponential backoff (1s→60s) on Moonraker connection loss.
+- **Flush on spool change** — previous spool data is saved before switching.
+
 ## Development Setup
 
 ```bash
