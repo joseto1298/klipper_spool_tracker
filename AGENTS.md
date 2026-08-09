@@ -23,7 +23,7 @@ Verify by running `python tracker.py` — no tests, no linter, no formatter, no 
 - `config.example.json` — template; copied by `install.sh` on first run
 - ENV overrides (`MOONRAKER_URL`, `DB_PATH`, `HTTP_HOST`, `HTTP_PORT`) beat config.json
 - `http.enabled: false` in config.json disables the HTTP server (and `--tracker` queries fail)
-- DB auto-prunes to last 100 distinct jobs; WAL journal mode
+- DB; WAL journal mode
 
 ## Architecture
 

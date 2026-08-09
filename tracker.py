@@ -145,23 +145,6 @@ class Database:
         )
         self.conn.commit()
 
-    def prune(self, keep_jobs: int = 100) -> None:
-        cur = self.conn.execute("""
-            SELECT job_id FROM spool_usage
-            GROUP BY job_id
-            ORDER BY MAX(id) DESC
-        """)
-        jobs = [row[0] for row in cur.fetchall()]
-        if len(jobs) > keep_jobs:
-            old = jobs[keep_jobs:]
-            placeholders = ",".join("?" for _ in old)
-            self.conn.execute(
-                f"DELETE FROM spool_usage WHERE job_id IN ({placeholders})",
-                old,
-            )
-            self.conn.commit()
-            logger.info("Pruned %s old jobs", len(old))
-
     def query(self, job_id: Optional[str] = None, spool_id: Optional[int] = None) -> List[Dict[str, Any]]:
         cur = self.conn.execute(
             "SELECT job_id, spool_id, SUM(filament_mm) "
@@ -431,8 +414,6 @@ class MoonrakerClient:
         for spool_id, mm in self.job_spool_usage.items():
             if mm > 0:
                 logger.info("  Spool %s: %.2f mm", spool_id, mm)
-
-        self.db.prune()
 
         self.current_job_id = None
         self.current_spool_id = None
