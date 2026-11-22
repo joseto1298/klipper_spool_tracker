@@ -6,3 +6,5 @@ __pycache__/
 .agents/
 config.json
 
+*.db-shm
+*.db-wal
